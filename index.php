@@ -6,6 +6,9 @@ use ZipArchive;
 use RecursiveIteratorIterator;
 use RecursiveDirectoryIterator;
 
+include_once(dirname(__FILE__) . '/dependencies/Mysqldump.php');
+use Ifsnop\Mysqldump as IMysqldump;
+
 error_reporting(E_ALL ^ E_NOTICE);
 
 /**
@@ -58,6 +61,12 @@ class Updater
   protected $currentModuleVersion;
 
   /**
+   * Has the database been backed up in this session
+   * @var boolean
+   */
+  protected $databaseIsBackedUp;
+
+  /**
    * Array of all installed modules
    * @var array
    */
@@ -98,6 +107,7 @@ class Updater
     $this->apiBaseUrl = $this->config['general']['api_url'];
     $this->backupPath = $this->config['general']['backup_path'];
     $this->updatePath = $this->config['general']['update_path'];
+    $this->databaseIsBackedUp = false;
   }
 
   public function runUpdate()
@@ -158,6 +168,42 @@ class Updater
 
 
   /**
+   * if databaseIsBackedUp is false, attempts to backup the database provided
+   * using mysqldump-php
+   * @return boolean returns true if attempt was succesful
+   */
+  public function backupDatabase()
+  {
+    if ($this->databaseIsBackedUp) {
+      return true;
+    } else {
+      echo('<br>backing up database...');
+
+      if(!is_dir($this->backupPath. "database/")) {
+        mkdir($this->backupPath. "database/", 0660, true);
+        echo("<pre>
+        Directory {$this->backupPath}database/ does not exist. Created.
+        </pre>");
+      }
+
+      $now = date("Ymd-Gi");
+      $nowFormatted = date("Y-m-d H:i:s");
+      try {
+        $dump = new IMysqldump\Mysqldump('mysql:host=localhost;dbname=djvbnu_makeit', 'root', '');
+        $dump->start($this->backupPath . "database/db-{$this->currentCoreVersion}-{$now}.zip");
+        $this->databaseIsBackedUp = true;
+        $this->config_set('general', 'latest_db_backup', $nowFormatted);
+        $this->config_set('general', 'db_backup_name', "db-{$this->currentCoreVersion}-{$now}.zip");
+
+        return true;
+      } catch (\Exception $e) {
+          echo 'mysqldump-php error: ' . $e->getMessage();
+          return false;
+      }
+    }
+  }
+
+  /**
    * Function to check for core updates. Uses MakeItLive API
    * @return null
    */
@@ -192,6 +238,9 @@ class Updater
       echo("<pre>New version found. Fetching update package...");
       if (!\file_exists('cms')) {
         mkdir('cms', 0660, true);
+      }
+      if(!$this->backupDatabase()) {
+        die('Could not backup database. Updating is not secure...');
       }
       if ($this->backupCore()) {
         $updateFile = $this->downloadCoreUpdate($this->coreUpdateUrl);
@@ -345,6 +394,37 @@ class Updater
   }
 
 
+  /**
+   * Restore the database to the backed up version thats provided
+   * @param  string $dbBackupFile File to restore, needs to be a ZipArchive
+   * @return none
+   */
+  public function restoreDatabase($dbBackupFile)
+  {
+    $backup = \readFile($dbBackupFile);
+    $sql_clean = '';
+    foreach (explode("\n", $backup) as $line){
+        if(isset($line[0]) && $line[0] != "#"){
+            $sql_clean .= $line."\n";
+        }
+    }
+    foreach (explode(";\n", $sql_clean) as $sql){
+        $sql = trim($sql);
+        if($sql){
+            print_r("<pre>
+            {$sql}
+            </pre>");
+            die();
+        }
+    }
+  }
+
+
+  /**
+   * Runs an update using the file provided
+   * @param  string $updateFile path of updatefile. File needs to be a ZipArchive
+   * @return none
+   */
   public function update($updateFile)
   {
     $path = pathinfo(realpath(__FILE__), PATHINFO_DIRNAME);
@@ -370,11 +450,12 @@ class Updater
 $time_start = microtime(true);
 $updater = new Updater();
 $updater->runUpdate();
+// $updater->restoreDatabase('backups/database/db-3.0.0-20180410-959.zip');
 $time_end = microtime(true);
 $execution_time = ($time_end - $time_start);
 
 //execution time of the script
-echo '<b>Total Execution Time:</b> '.$execution_time.' Mins';
+echo '<b>Total Execution Time:</b> '.$execution_time.' Secs';
 die();
 
 
