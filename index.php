@@ -5,6 +5,7 @@ namespace Analogue\MakeItLive;
 use ZipArchive;
 use RecursiveIteratorIterator;
 use RecursiveDirectoryIterator;
+use PDO;
 
 include_once(dirname(__FILE__) . '/dependencies/Mysqldump.php');
 use Ifsnop\Mysqldump as IMysqldump;
@@ -401,20 +402,24 @@ class Updater
    */
   public function restoreDatabase($dbBackupFile)
   {
-    $backup = \readFile($dbBackupFile);
+    $backup = \file_get_contents($dbBackupFile);
     $sql_clean = '';
     foreach (explode("\n", $backup) as $line){
         if(isset($line[0]) && $line[0] != "#"){
             $sql_clean .= $line."\n";
         }
     }
+    $db = new PDO('mysql:host=localhost', 'root', '');
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $dbname = 'djvbnu_makeit_restore';
+    $dbname = "`".str_replace("`","``",$dbname)."`";
+    $db->query("CREATE DATABASE IF NOT EXISTS $dbname");
+    $db->query("use $dbname");
+
     foreach (explode(";\n", $sql_clean) as $sql){
         $sql = trim($sql);
         if($sql){
-            print_r("<pre>
-            {$sql}
-            </pre>");
-            die();
+            $db->query($sql);
         }
     }
   }
@@ -450,7 +455,6 @@ class Updater
 $time_start = microtime(true);
 $updater = new Updater();
 $updater->runUpdate();
-// $updater->restoreDatabase('backups/database/db-3.0.0-20180410-959.zip');
 $time_end = microtime(true);
 $execution_time = ($time_end - $time_start);
 
