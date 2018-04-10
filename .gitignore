@@ -1,0 +1,7 @@
+# Gitignore file for MIL CMS updater
+# should always include cms files and update packages as they should never be publicly stored
+cms
+modules
+updates
+backups
+dependencies
