@@ -92,6 +92,12 @@ class Updater
   protected $newestModuleVersion;
 
   /**
+   * phinxWrapper for database migrations
+   * @var \Phinx\Wrapper\TextWrapper
+   */
+  protected $phinxWrap;
+
+  /**
    * Path where updates are stored temporarily, relative to script location
    * @var string
    */
@@ -246,6 +252,7 @@ class Updater
       if ($this->backupCore()) {
         $updateFile = $this->downloadCoreUpdate($this->coreUpdateUrl);
         $this->update($updateFile);
+        $this->checkMigrationsForCore();
         $nowFormatted = date("Y-m-d H:i:s");
         $this->config_set('core', 'version', $this->newestCoreVersion);
         $this->config_set('core', 'last_update', $nowFormatted);
@@ -257,8 +264,63 @@ class Updater
 
 
   /**
+   * Run Phinx against migrations in the cms folder.
+   * @return none
+   */
+  public function checkMigrationsForCore()
+  {
+    $phinx = $this->getPhinx();
+    $_SERVER['PHINX_MIGRATION_PATH'] = "%%PHINX_CONFIG_DIR%%/cms/migrations";
+
+    $output = call_user_func([$phinx, 'getMigrate'], NULL, NULL);
+    $error = $phinx->getExitCode() > 0;
+
+    $results = \explode("\n", $output);
+    \array_splice($results, 0, 5);
+    \array_splice($results, 1, 4);
+    \array_splice($results, -1, 1);
+    \array_splice($results, -2, 1);
+    //print_r($results);
+    echo("Checking for migrations in: " . $results[0] . "<br>");
+
+    for ($i=1; $i < count($results); $i++) {
+      echo($results[$i] . "<br>");
+    }
+
+  }
+
+
+  /**
+   * Run Phinx against migrations in modules/$moduleName/migrations.
+   * @param  string $moduleName name of the module to check
+   * @return none
+   */
+  public function checkMigrationsForModule($moduleName)
+  {
+    $phinx = $this->getPhinx();
+    $_SERVER['PHINX_MIGRATION_PATH'] = "%%PHINX_CONFIG_DIR%%/modules/{$moduleName}/migrations";
+
+    $output = call_user_func([$phinx, 'getMigrate'], NULL, NULL);
+    $error = $phinx->getExitCode() > 0;
+
+    $results = \explode("\n", $output);
+    \array_splice($results, 0, 5);
+    \array_splice($results, 1, 4);
+    \array_splice($results, -1, 1);
+    \array_splice($results, -2, 1);
+    //print_r($results);
+    echo("Checking for migrations in: " . $results[0] . "<br>");
+
+    for ($i=1; $i < count($results); $i++) {
+      echo($results[$i] . "<br>");
+    }
+
+  }
+
+
+  /**
    * Function to check for modules updates. Uses MakeItLive API
-   * @return null
+   * @return none
    */
   public function checkModuleUpdates()
   {
@@ -296,9 +358,13 @@ class Updater
         echo("<pre>{$localModule}: {$localVersion} -> <b>{$remoteVersion}</b></pre>");
         if ($localVersion != $remoteVersion) {
           echo("Update available!");
+          if(!$this->backupDatabase()) {
+            die('Could not backup database. Updating is not secure...');
+          }
           $downloadUrl = $remoteModules['results'][$localModule]['packages']['upgrade_link'];
           $updateFile = $this->downloadModuleUpdate($localModule,$remoteVersion,$downloadUrl);
           $this->update($updateFile);
+          $this->checkMigrationsForModule($localModule);
           $nowFormatted = date("Y-m-d H:i:s");
           $this->config_set("module_{$localModule}", 'version', $remoteVersion);
           $this->config_set("module_{$localModule}", 'last_update', $nowFormatted);
@@ -396,6 +462,21 @@ class Updater
 
 
   /**
+   * Calls Phinx or creates a new instance if it doesn't exist yet.
+   * @return \Phinx\Wrapper\TextWrapper Phinx instance
+   */
+  public function getPhinx()
+  {
+    if($this->phinxWrap == NULL) {
+      $phinxApp = require __DIR__ . '/dependencies/vendor/robmorgan/phinx/app/phinx.php';
+      return $this->phinxWrap = new \Phinx\Wrapper\TextWrapper($phinxApp);
+    } else {
+      return  $this->phinxWrap;
+    }
+  }
+
+
+  /**
    * Restore the database to the backed up version thats provided
    * @param  string $dbBackupFile File to restore, needs to be a ZipArchive
    * @return none
@@ -426,6 +507,35 @@ class Updater
 
 
   /**
+   * Rollback migrations for the module specified
+   * @param string $module  Name name of the module to rollback
+   * @param int $target     Target version. Set to 0 for uninstall
+   * @return none
+   */
+  public function rollbackMigrationsForModule($moduleName, $target)
+  {
+    $phinx = $this->getPhinx();
+    $_SERVER['PHINX_MIGRATION_PATH'] = "%%PHINX_CONFIG_DIR%%/modules/{$moduleName}/migrations";
+
+    $output = call_user_func([$phinx, 'getRollback'], NULL, $target);
+    $error = $phinx->getExitCode() > 0;
+
+    //$results = \explode("\n", $output);
+    // \array_splice($results, 0, 5);
+    // \array_splice($results, 1, 4);
+    // \array_splice($results, -1, 1);
+    // \array_splice($results, -2, 1);
+    print_r($output);
+    // echo("Checking for migrations in: " . $results[0] . "<br>");
+    //
+    // for ($i=1; $i < count($results); $i++) {
+    //   echo($results[$i] . "<br>");
+    // }
+
+  }
+
+
+  /**
    * Runs an update using the file provided
    * @param  string $updateFile path of updatefile. File needs to be a ZipArchive
    * @return none
@@ -450,11 +560,10 @@ class Updater
   }
 }
 
-
-
 $time_start = microtime(true);
 $updater = new Updater();
 $updater->runUpdate();
+
 $time_end = microtime(true);
 $execution_time = ($time_end - $time_start);
 
