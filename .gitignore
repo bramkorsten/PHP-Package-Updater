@@ -5,3 +5,4 @@ modules
 updates
 backups
 config.ini
+updater/logs

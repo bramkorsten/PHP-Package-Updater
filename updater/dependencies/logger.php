@@ -32,6 +32,12 @@
     protected $executionTime;
 
     /**
+     * name of the package making log entries
+     * @var string
+     */
+    protected $packageName;
+
+    /**
      * Begin and endtimes of the timing function.
      * @var int
      */
@@ -43,7 +49,7 @@
      * @param string $filePath Path of the file to write the log to, relative to the logging class path.
      * @param string $fileName Name of the file to write to. Will be proceeded with a date.
      */
-    function __construct($filePath, $fileName)
+    function __construct($filePath, $fileName, $packageName)
     {
       $this->filePath = dirname(__DIR__) . "/" . $filePath . "/";
 
@@ -53,6 +59,7 @@
 
       $this->fileName = date("Y-m-d") . "-" . $fileName . ".txt";
       $this->file = $this->filePath . $this->fileName;
+      $this->packageName = $packageName;
     }
 
     /**
@@ -60,12 +67,37 @@
      * @param string $message The message to write to the log
      * @param string $type    the type of message [verbose, warning, error]
      */
-    public function add($message, $type = "verbose")
+    public function add($message, $type = "info", $package = "")
     {
+      if ($package == "") {
+        $package = $this->packageName;
+      }
+      $typeLetter;
+      switch ($type) {
+        case 'verbose':
+          $typeLetter = "V/";
+          break;
+
+        case 'info':
+          $typeLetter = "I/";
+          break;
+
+        case 'warning':
+          $typeLetter = "W/";
+          break;
+
+        case 'error':
+          $typeLetter = "E/";
+          break;
+
+        default:
+          $typeLetter = "";
+          break;
+      }
       // open file
       $fd = fopen($this->file, "a");
       // append date/time to message
-      $str = "[" . date("Y/m/d h:i:s", mktime()) . "] [{$type}] " . $message;
+      $str = date("Y/m/d h:i:s", time()) . ": {$typeLetter}{$package}: " . $message;
       // write string
       fwrite($fd, $str . "\n");
       // close file
@@ -78,9 +110,9 @@
       // open file
       $fd = fopen($this->file, "a");
       // append date/time to message
-      $str = "[" . date("Y/m/d h:i:s", mktime()) . "] [STARTING LOG] \n";
+      $str = date("Y/m/d h:i:s", time()) . ": V/MakeItLive_Logger: STARTING LOG\n";
       // write string
-      fwrite($fd, $str . "\n");
+      fwrite($fd, "\n" . $str . "\n");
       // close file
       fclose($fd);
     }
@@ -92,7 +124,8 @@
       // open file
       $fd = fopen($this->file, "a");
       // append date/time to message
-      $str = "[" . date("Y/m/d h:i:s", mktime()) . "] [END OF LOG]\nTOTAL EXECUTION TIME SINCE LOG START: " . $execution_time . "SECONDS";
+      $this->add("ENDING LOG", "verbose", "MakeItLive_Logger");
+      $str = date("Y/m/d h:i:s", time()) . ": V/MakeItLive_Logger: TOTAL EXECUTION TIME SINCE LOG START: " . $execution_time . " SECONDS";
       // write string
       fwrite($fd, $str . "\n\n");
       // close file
