@@ -105,6 +105,12 @@ class UpdateManager
   protected $phinxWrap;
 
   /**
+   * The remote configuration of this instance
+   * @var string
+   */
+  public $remoteInstanceInformation;
+
+  /**
    * Root path relative to the updatescript. Fetched on Construct from config.ini
    * @var string
    */
@@ -135,6 +141,13 @@ class UpdateManager
 
   public function run()
   {
+    try {
+      $this->remoteInstanceInformation = $this->getInstanceInformation();
+    } catch (\Exception $e) {
+      echo "Error:" . $e;
+    }
+
+
     $this->checkCoreUpdates();
     $this->checkModuleUpdates();
   }
@@ -519,6 +532,36 @@ class UpdateManager
     curl_close($ch);
     \fclose($fileHandler);
     return $local_file;
+  }
+
+
+  /**
+   * Gets all information about this instance and it's modules. This function replaces the old CheckUpdate() Methods.
+   * @return array The formatted responsedata
+   * @throws Exception When the server responds with an error
+   */
+  public function getInstanceInformation()
+  {
+    $authorizationToken = $this->applicationToken;
+    // $authorizationToken = "1234";
+    $curlVariables = array(
+      'Authorization' => $authorizationToken
+    );
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $this->apiBaseUrl . 'instances');
+    curl_setopt($ch, CURLOPT_POST, 1);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, \http_build_query($curlVariables));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+
+    $result = curl_exec($ch);
+    $instanceInformation = json_decode($result, true);
+    curl_close($ch);
+
+    if ($instanceInformation["error"] !== "false") {
+      throw new \Exception("The request returned an error: {$instanceInformation['message']}", 1);
+    } else {
+      return $instanceInformation;
+    }
   }
 
 
