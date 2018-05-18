@@ -11,6 +11,9 @@ use PDO;
 include_once(dirname(__FILE__) . '/dependencies/Mysqldump.php');
 use Ifsnop\Mysqldump as IMysqldump;
 
+include_once(dirname(__FILE__) . '/dependencies/logger.php');
+use BramKorsten\MakeItLive\Logger as Logger;
+
 error_reporting(E_ALL ^ E_NOTICE);
 
 /**
@@ -19,6 +22,11 @@ error_reporting(E_ALL ^ E_NOTICE);
  */
 class UpdateManager
 {
+  /**
+   * Current version of UpdateManager
+   * @var string
+   */
+  protected $version = "1.0.0";
 
   /**
    * MakeItLive API url
@@ -81,16 +89,22 @@ class UpdateManager
   protected $installedModules;
 
   /**
+   * Latest core version retrieved from server
+   * @var string
+   */
+  protected $latestCoreVersion;
+
+  /**
+   * Class for keeping logs of what happens during an update
+   * @var BramKorsten\MakeItLive\Logger
+   */
+  protected $log;
+
+  /**
    * Where the update script gets the zip containing the module from
    * @var string
    */
   protected $moduleUpdateUrl;
-
-  /**
-   * Newest core version retrieved from server
-   * @var string
-   */
-  protected $newestCoreVersion;
 
   /**
    * Newest module version retrieved from server
@@ -128,7 +142,6 @@ class UpdateManager
    */
   function __construct()
   {
-
     $this->config = parse_ini_file($this->configPath . 'config.ini', true);
     $this->currentCoreVersion = $this->config['core']['version'];
     $this->apiBaseUrl = $this->config['general']['api_url'];
@@ -137,19 +150,25 @@ class UpdateManager
     $this->backupPath = __DIR__ . "/" . $this->rootPath . $this->config['general']['backup_path'];
     $this->updatePath = __DIR__ . "/" . $this->rootPath . $this->config['general']['update_path'];
     $this->databaseIsBackedUp = false;
+    $this->log = new Logger("logs", "updatelog", "UpdateManager");
   }
 
   public function run()
   {
+    $this->log->start();
+    $this->log->add("UpdateManager version " . $this->version);
+    $this->log->add("Starting updateprocess...");
+
     try {
-      $this->remoteInstanceInformation = $this->getInstanceInformation();
+      $this->remoteInstanceInformation = $this->getInstanceInformation()['instance'];
     } catch (\Exception $e) {
-      echo "Error:" . $e;
+      $this->log->add($e, "error");
+      return false;
     }
 
-
-    $this->checkCoreUpdates();
-    $this->checkModuleUpdates();
+    $this->runCoreUpdates();
+    $this->runModuleUpdates();
+    $this->log->end();
   }
 
 
@@ -164,43 +183,49 @@ class UpdateManager
     // Get real path for our folder
 
     $rootPath = realpath(__DIR__ . "/" . $this->rootPath  . "cms");
+    $this->log->add("Backing up {$rootPath}");
 
-    // Initialize archive object
-    $zip = new ZipArchive();
-    if(!is_dir($this->backupPath. "core/")) {
-      mkdir($this->backupPath. "core/", 0660, true);
-      chmod($this->backupPath. "core/", 0774);
-      echo("<pre>
-      Directory {$this->backupPath}core/ does not exist. Created.
-      </pre>");
+    try {
+      // Initialize archive object
+      $zip = new ZipArchive();
+      if(!is_dir($this->backupPath. "core/")) {
+        mkdir($this->backupPath. "core/", 0660, true);
+        chmod($this->backupPath. "core/", 0774);
+        $this->log->add("Creating core backup folder...");
+      }
+      $zip->open($this->backupPath . "core/backup-{$this->currentCoreVersion}-{$now}.zip", ZipArchive::CREATE | ZipArchive::OVERWRITE);
+
+      // Create recursive directory iterator
+      /** @var SplFileInfo[] $files */
+      $files = new RecursiveIteratorIterator(
+          new RecursiveDirectoryIterator($rootPath),
+          RecursiveIteratorIterator::LEAVES_ONLY
+      );
+
+      foreach ($files as $name => $file)
+      {
+          // Skip directories (they would be added automatically)
+          if (!$file->isDir())
+          {
+              // Get real and relative path for current file
+              $filePath = $file->getRealPath();
+              $relativePath = substr($filePath, strlen($rootPath) + 1);
+
+              // Add current file to archive
+              $zip->addFile($filePath, $relativePath);
+          }
+      }
+      // TODO: remove local setting and add to API instance
+      $this->config_set('core', 'latest_backup', $nowFormatted);
+      $this->config_set('core', 'backup_name', "backup-{$this->currentCoreVersion}-{$now}.zip");
+      $zip->close();
+      $this->log->add("Finished backing up the MakeItLive Core");
+      return true;
+
+    } catch (\Exception $e) {
+      $this->log->add("Could not create core backup... Updating is not secure and will be cancelled.", "error");
+      $this->log->add($e, "error");
     }
-    $zip->open($this->backupPath . "core/backup-{$this->currentCoreVersion}-{$now}.zip", ZipArchive::CREATE | ZipArchive::OVERWRITE);
-
-    // Create recursive directory iterator
-    /** @var SplFileInfo[] $files */
-    $files = new RecursiveIteratorIterator(
-        new RecursiveDirectoryIterator($rootPath),
-        RecursiveIteratorIterator::LEAVES_ONLY
-    );
-
-    foreach ($files as $name => $file)
-    {
-        // Skip directories (they would be added automatically)
-        if (!$file->isDir())
-        {
-            // Get real and relative path for current file
-            $filePath = $file->getRealPath();
-            $relativePath = substr($filePath, strlen($rootPath) + 1);
-
-            // Add current file to archive
-            $zip->addFile($filePath, $relativePath);
-        }
-    }
-    $this->config_set('core', 'latest_backup', $nowFormatted);
-    $this->config_set('core', 'backup_name', "backup-{$this->currentCoreVersion}-{$now}.zip");
-
-    $zip->close();
-    return true;
   }
 
 
@@ -212,15 +237,14 @@ class UpdateManager
   public function backupDatabase()
   {
     if ($this->databaseIsBackedUp) {
+      $this->log->add("Database already backed up!");
       return true;
     } else {
-      echo('<br>backing up database...');
+      $this->log->add("Backing up database...");
       if(!is_dir($this->backupPath. "database/")) {
+        $this->log->add("Creating database backup folder in {$this->backupPath}database");
         mkdir($this->backupPath. "database/", 0660, true);
         chmod($this->backupPath. "database/", 0774);
-        echo("<pre>
-        Directory {$this->backupPath}database/ does not exist. Created.
-        </pre>");
       }
 
       $now = date("Ymd-Gi");
@@ -229,67 +253,15 @@ class UpdateManager
         $dump = new IMysqldump\Mysqldump('mysql:host=localhost;dbname=djvbnu_makeit', 'root', '');
         $dump->start($this->backupPath . "database/db-{$this->currentCoreVersion}-{$now}.zip");
         $this->databaseIsBackedUp = true;
+        // TODO: Remove local setting and add to API instance
         $this->config_set('general', 'latest_db_backup', $nowFormatted);
         $this->config_set('general', 'db_backup_name', "db-{$this->currentCoreVersion}-{$now}.zip");
-
+        $this->log->add("Successfully backed up database");
         return true;
       } catch (\Exception $e) {
-          echo 'mysqldump-php error: ' . $e->getMessage();
+          $this->log->add("mysqldump-php throwed an error: ". $e->getMessage(), "error");
           return false;
       }
-    }
-  }
-
-  /**
-   * Function to check for core updates. Uses MakeItLive API
-   * @return null
-   */
-  public function checkCoreUpdates()
-  {
-    echo("<pre>Current core version is {$this->currentCoreVersion}.</pre>
-          <pre>Fetching latest version...</pre>");
-
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_URL, $this->apiBaseUrl . 'core/releases/latest');
-    $result = curl_exec($ch);
-    curl_close($ch);
-
-    $obj = json_decode($result);
-    $first = true;
-    foreach ($obj->results as $object) { // TODO: CHECK IF ANY RESULTS
-      if ($first) {
-        $this->newestCoreVersion = $object->version;
-        $this->coreUpdateUrl = $object->packages->upgrade_link;
-        $first = false;
-      }
-      echo("<pre>
-      Version {$object->version}
-      Released on {$object->release_date}
-      Download: {$object->packages->upgrade_link}
-      </pre>");
-    }
-
-    if (\version_compare($this->currentCoreVersion, $this->newestCoreVersion, '<')) {
-      echo("<pre>New version found. Fetching update package...");
-      if (!\file_exists('cms')) {
-        mkdir('cms', 0660, true);
-        chmod('cms', 0774);
-      }
-      if(!$this->backupDatabase()) {
-        die('Could not backup database. Updating is not secure...');
-      }
-      if ($this->backupCore()) {
-        $updateFile = $this->downloadCoreUpdate($this->coreUpdateUrl);
-        $this->update($updateFile);
-        $this->checkMigrationsForCore();
-        $nowFormatted = date("Y-m-d H:i:s");
-        $this->config_set('core', 'version', $this->newestCoreVersion);
-        $this->config_set('core', 'last_update', $nowFormatted);
-      };
-    } else {
-      echo("<pre>No new version found</pre>");
     }
   }
 
@@ -300,23 +272,35 @@ class UpdateManager
    */
   public function checkMigrationsForCore()
   {
+    // TODO: Add configurable cms folder to Phinx
+    $this->log->add("Checking for new migrations using Phinx()");
     $phinx = $this->getPhinx();
     $_SERVER['PHINX_MIGRATION_PATH'] = "%%PHINX_CONFIG_DIR%%/cms/migrations";
+    $this->log->add("  -  Checking for migrations in '%%PHINX_CONFIG_DIR%%/cms/migrations'");
 
-    $output = call_user_func([$phinx, 'getMigrate'], NULL, NULL);
-    $error = $phinx->getExitCode() > 0;
+    try {
+      $output = call_user_func([$phinx, 'getMigrate'], NULL, NULL);
+      $error = $phinx->getExitCode() > 0;
 
-    $results = \explode("\n", $output);
-    \array_splice($results, 0, 5);
-    \array_splice($results, 1, 4);
-    \array_splice($results, -1, 1);
-    \array_splice($results, -2, 1);
-    //print_r($results);
-    echo("Checking for migrations in: " . $results[0] . "<br>");
+      $results = \explode("\n", $output);
+      \array_splice($results, 0, 5);
+      \array_splice($results, 1, 4);
+      \array_splice($results, -1, 1);
+      \array_splice($results, -2, 1);
 
-    for ($i=1; $i < count($results); $i++) {
-      echo($results[$i] . "<br>");
+      $this->log->add("  -  Using migrations folder: ". $results[0]);
+
+      for ($i=1; $i < count($results); $i++) {
+        $this->log->add("  -  ". $results[$i]);
+      }
+      $this->log->add("Finished migrating");
+      return true;
+    } catch (\Exception $e) {
+      $this->log->add("Could not run migrations for core", "error");
+      $this->log->add($e, "error");
+      throw new \Exception("Error while running migrations for core. " . $e, 1);
     }
+
 
   }
 
@@ -328,9 +312,10 @@ class UpdateManager
    */
   public function checkMigrationsForModule($moduleName)
   {
+    $this->log->add("Checking for new migrations using Phinx()");
     $phinx = $this->getPhinx();
     $_SERVER['PHINX_MIGRATION_PATH'] = "%%PHINX_CONFIG_DIR%%/modules/{$moduleName}/migrations";
-
+    $this->log->add("  -  Checking for migrations in '%%PHINX_CONFIG_DIR%%/modules/{$moduleName}/migrations'");
     $output = call_user_func([$phinx, 'getMigrate'], NULL, NULL);
     $error = $phinx->getExitCode() > 0;
 
@@ -339,72 +324,11 @@ class UpdateManager
     \array_splice($results, 1, 4);
     \array_splice($results, -1, 1);
     \array_splice($results, -2, 1);
-    //print_r($results);
-    echo("Checking for migrations in: " . $results[0] . "<br>");
 
     for ($i=1; $i < count($results); $i++) {
-      echo($results[$i] . "<br>");
+      $this->log->add("  -  " . $results[$i]);
     }
 
-  }
-
-
-  /**
-   * Function to check for modules updates. Uses MakeItLive API
-   * @return none
-   */
-  public function checkModuleUpdates()
-  {
-    $curlVariables = array(
-      'modules' => array()
-    );
-    echo("<pre>Using modules: </pre><pre>");
-    foreach ($this->config['modules']['modules'] as $module) {
-      $version = $this->config["module_{$module}"]['version'];
-      echo("{$module}@v{$version}\n");
-      $this->installedModules[$module] = $version;
-      $curlVariables['modules'][] = $module;
-
-    }
-    echo('</pre>');
-
-    echo("<pre>Fetching newest module versions: </pre><pre>");
-
-    $ch = curl_init();
-
-    curl_setopt($ch, CURLOPT_URL, $this->apiBaseUrl . 'modules/releases');
-    curl_setopt($ch, CURLOPT_POST, 1);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, \http_build_query($curlVariables));
-
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-
-    $result = curl_exec($ch);
-
-    $remoteModules = json_decode($result, true);
-    curl_close($ch);
-
-    foreach ($this->installedModules as $localModule => $localVersion) {
-      $remoteVersion = $remoteModules['results'][$localModule]['version'];
-      if ($remoteVersion != "") {
-        echo("<pre>{$localModule}: {$localVersion} -> <b>{$remoteVersion}</b></pre>");
-        if (\version_compare($localVersion, $remoteVersion, '<')) {
-          echo("Update available!");
-          if(!$this->backupDatabase()) {
-            die('Could not backup database. Updating is not secure...');
-          }
-          $downloadUrl = $remoteModules['results'][$localModule]['packages']['upgrade_link'];
-          $updateFile = $this->downloadModuleUpdate($localModule,$remoteVersion,$downloadUrl);
-          $this->update($updateFile, "modules/{$localModule}");
-          $this->checkMigrationsForModule($localModule);
-          $nowFormatted = date("Y-m-d H:i:s");
-          $this->config_set("module_{$localModule}", 'version', $remoteVersion);
-          $this->config_set("module_{$localModule}", 'last_update', $nowFormatted);
-        }
-      } else {
-        echo("<pre>No information available for module <b>{$localModule}</b>. Is it a valid module?</pre>");
-      }
-
-    }
   }
 
 
@@ -446,13 +370,11 @@ class UpdateManager
    */
   public function downloadCoreUpdate($downloadUrl)
   {
-    echo($this->updatePath);
+    $this->log->add("Downloading core update from: {$downloadUrl}");
     if(!is_dir($this->updatePath)) {
       mkdir($this->updatePath, 0660, true);
       chmod($this->updatePath, 0777);
-      echo("<pre>
-      Directory {$this->updatePath} does not exist. Created.
-      </pre>");
+      $this->log->add("Created {$this->updatePath}");
     }
     $local_file = $this->updatePath . "mil-core-upgrade-{$this->newestCoreVersion}.zip";
     $fileHandler = \fopen($local_file, 'w');
@@ -473,16 +395,20 @@ class UpdateManager
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
     curl_setopt($ch, CURLOPT_HTTPHEADER,$header);
     curl_exec($ch);
-    if(curl_errno($ch)){throw new Exception(curl_error($ch));}
-    if(curl_getinfo($ch)['http_code'] != 200) {
+    if (curl_errno($ch)) {
+      $this->log->add("There was an error while downloading an update package: " . curl_error($ch), "error");
+      throw new \Exception(curl_error($ch));
+    }
+    if (curl_getinfo($ch)['http_code'] != 200) {
       $httpCode = curl_getinfo($ch)['http_code'];
       curl_close($ch);
       \fclose($fileHandler);
+      $this->log->add("There was an error while downloading an update package with error code: {$httpCode}", "error");
       throw new \Exception("Error while fetching update package. Error code: {$httpCode}", 1);
     }
     curl_close($ch);
     \fclose($fileHandler);
-
+    $this->log->add("Successfully fetched update package!");
     return $local_file;
   }
 
@@ -492,7 +418,7 @@ class UpdateManager
    * @param  string $name Name of the module
    * @param  string $version New version of the module
    * @param  string $downloadUrl Where to download the file from
-   * @return string              The saved path of the update file
+   * @return string The saved path of the update file
    */
   public function downloadModuleUpdate($name, $version, $downloadUrl)
   {
@@ -522,7 +448,7 @@ class UpdateManager
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, 1);
     curl_setopt($ch, CURLOPT_HTTPHEADER,$header);
     curl_exec($ch);
-    if(curl_errno($ch)){throw new Exception(curl_error($ch));}
+    if(curl_errno($ch)){throw new \Exception(curl_error($ch));}
     if(curl_getinfo($ch)['http_code'] != 200) {
       $httpCode = curl_getinfo($ch)['http_code'];
       curl_close($ch);
@@ -542,6 +468,7 @@ class UpdateManager
    */
   public function getInstanceInformation()
   {
+    $this->log->add("Asking API for instance information using the applicationToken from the config file");
     $authorizationToken = $this->applicationToken;
     // $authorizationToken = "1234";
     $curlVariables = array(
@@ -554,12 +481,19 @@ class UpdateManager
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 
     $result = curl_exec($ch);
+    if(curl_errno($ch)){throw new \Exception(curl_error($ch));}
+    if(curl_getinfo($ch)['http_code'] != 200) {
+      $httpCode = curl_getinfo($ch)['http_code'];
+      curl_close($ch);
+      throw new \Exception("Error while getting instance information... Error code: {$httpCode}", 1);
+    }
     $instanceInformation = json_decode($result, true);
     curl_close($ch);
 
     if ($instanceInformation["error"] !== "false") {
       throw new \Exception("The request returned an error: {$instanceInformation['message']}", 1);
     } else {
+      $this->log->add("Successfully got information!");
       return $instanceInformation;
     }
   }
@@ -587,6 +521,7 @@ class UpdateManager
    */
   public function restoreDatabase($dbBackupFile)
   {
+    $this->log->add("Restoring database backup {$dbBackupFile}");
     $backup = \file_get_contents($dbBackupFile);
     $sql_clean = '';
     foreach (explode("\n", $backup) as $line){
@@ -594,18 +529,48 @@ class UpdateManager
             $sql_clean .= $line."\n";
         }
     }
-    $db = new PDO('mysql:host=localhost', 'root', '');
-    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $dbname = 'djvbnu_makeit_restore';
-    $dbname = "`".str_replace("`","``",$dbname)."`";
-    $db->query("CREATE DATABASE IF NOT EXISTS $dbname");
-    $db->query("use $dbname");
 
-    foreach (explode(";\n", $sql_clean) as $sql){
-        $sql = trim($sql);
-        if($sql){
-            $db->query($sql);
-        }
+    try {
+      $db = new PDO('mysql:host=localhost', 'root', '');
+      $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+      // TODO: Should probably not get restored to only a backup database, but also to the main one.
+      $dbname = 'djvbnu_makeit_restore';
+      $dbname = "`".str_replace("`","``",$dbname)."`";
+      $db->query("CREATE DATABASE IF NOT EXISTS $dbname");
+      $db->query("use $dbname");
+
+      foreach (explode(";\n", $sql_clean) as $sql){
+          $sql = trim($sql);
+          if($sql){
+              $db->query($sql);
+          }
+      }
+      $this->log->add("Successfully restored database to {$dbname}");
+      return true;
+    } catch (\Exception $e) {
+      $this->log->add("There was a problem while restoring the database...", "error");
+      $this->log->add($e->getMessage(), "error");
+      return false;
+    }
+  }
+
+
+  /**
+   * Recursively remove a folder and all its subfolders
+   * @param  string $path The path to delete
+   * @return none
+   */
+  public function removeFolder($path)
+  {
+    if ($path == "") {
+      $this->log->add("WARNING: folder to delete cannot be empty for safety reasons...", "warning");
+    } else {
+      $this->log->add("Deleting folder: '{$path}'");
+      foreach( new RecursiveIteratorIterator(
+          new RecursiveDirectoryIterator( $path, FilesystemIterator::SKIP_DOTS | FilesystemIterator::UNIX_PATHS ),
+          RecursiveIteratorIterator::CHILD_FIRST ) as $value ) {
+              $value->isFile() ? unlink( $value ) : rmdir( $value );
+      }
     }
   }
 
@@ -635,7 +600,123 @@ class UpdateManager
     // for ($i=1; $i < count($results); $i++) {
     //   echo($results[$i] . "<br>");
     // }
+  }
 
+
+  /**
+   * Function to check for core updates. Uses MakeItLive API
+   * @return null
+   * @throws Exception will throw exception when there is an error
+   */
+  public function runCoreUpdates()
+  {
+    $this->log->add("Core running MakeItLive v{$this->currentCoreVersion}");
+    $this->latestCoreVersion = $this->remoteInstanceInformation["core_versions"][0]["version"];
+    $latestCoreReleaseDate = $this->remoteInstanceInformation["core_versions"][0]["release_date"];
+    $this->coreUpdateUrl = $this->remoteInstanceInformation["core_versions"][0]["upgrade_link"];
+
+    $this->log->add("Latest version is v{$this->latestCoreVersion}, released on '{$latestCoreReleaseDate}'");
+
+    if (\version_compare($this->currentCoreVersion, $this->latestCoreVersion, '<')) {
+      $this->log->add("New version found! Peparing to update the core...");
+      // TODO: Make path to CMS configurable
+      if (!\file_exists('cms')) {
+        $this->log->add("No core folder found! Creating it!");
+        mkdir('cms', 0660, true);
+        chmod('cms', 0774);
+      }
+      if(!$this->backupDatabase()) {
+        $this->log->add("Could not backup database. Updating is not secure and will be cancelled!", "error");
+        throw new \Exception("Error while backing up the database. Updating would not be secure...", 1);
+      }
+      if ($this->backupCore()) {
+        try {
+          $updateFile = $this->downloadCoreUpdate($this->coreUpdateUrl);
+          $this->removeFolder("cms");
+          $this->update($updateFile);
+          $this->checkMigrationsForCore();
+          $nowFormatted = date("Y-m-d H:i:s");
+          // TODO: Delete local setting and add to API
+          $this->config_set('core', 'version', $this->latestCoreVersion);
+          $this->config_set('core', 'last_update', $nowFormatted);
+        }
+        catch (\Exception $e) {
+          $this->log->add("Critical error while updating the core... Terminating", "error");
+          throw new \Exception("Error while updating the core with message: " . $e, 1);
+        }
+      }
+      else {
+        throw new \Exception("Error while backing up the core. Updating would not be secure...", 1);
+      }
+    } else {
+      $this->log->add("Core is up to date!");
+    }
+  }
+
+  // TODO: Add installed modules to the ini file
+  /**
+   * Function to check for modules updates. Uses MakeItLive API
+   * @return none
+   * @throws Exception will throw an exception if there's an error
+   */
+  public function runModuleUpdates()
+  {
+    $this->log->add("Checking for module updates");
+    //print_r($this->remoteInstanceInformation);
+    $installableModules = array();
+
+    foreach ($this->remoteInstanceInformation["modules"] as $module) {
+      if ($module !== "false") {
+        $moduleName = $module['name'];
+        if (isset($module['versions'][0]['version'])) {
+          $latestVersion = $module['versions'][0]['version'];
+          $upgradeLink = $module['versions'][0]['upgrade_link'];
+        } else {
+          $latestVersion = "0.0.0";
+        }
+        $this->installableModules[$moduleName]['version'] = $latestVersion;
+        $this->installableModules[$moduleName]['upgradelink'] = $upgradeLink;
+      } else {
+        $this->log->add("  -  WARNING: information about a module could not be found on the server. The response was false", "warning");
+      }
+    }
+
+    foreach ($this->installableModules as $installableModule => $module) {
+      $localVersion = $this->config["module_{$installableModule}"]['version'];
+      if ($localVersion == "") {
+        $localVersion = "0.0.0";
+      }
+      $latestVersion = $module['version'];
+      $latestVersionLink = $module['upgradelink'];
+
+      if ($latestVersion != "" && $latestVersion != "0.0.0" && $latestVersion != false) {
+        if (\version_compare($localVersion, $latestVersion, '<')) {
+          $this->log->add("  -  Module '{$installableModule}' will be updated from v{$localVersion} to v{$latestVersion}");
+          if(!$this->backupDatabase()) {
+            $this->log->add("Could not backup database! Updating would not be secure...", "error");
+            throw new \Exception("Could not backup database. Update stopped...", 1);
+            return false;
+          }
+          $downloadUrl = $latestVersionLink;
+          try {
+            $updateFile = $this->downloadModuleUpdate($installableModule,$latestVersion,$downloadUrl);
+            $this->removeFolder("modules/{$installableModule}");
+            $this->update($updateFile, "modules/{$installableModule}");
+            $this->checkMigrationsForModule($installableModule);
+          } catch (\Exception $e) {
+            // TODO: Add reverting method
+            $this->log->add("Exception while updating a module. Reverting...", "error");
+          }
+          $nowFormatted = date("Y-m-d H:i:s");
+          $this->config_set("module_{$installableModule}", 'version', $latestVersion);
+          $this->config_set("module_{$installableModule}", 'last_update', $nowFormatted);
+        }
+        $this->log->add("Finished this module!");
+      } else {
+        $this->log->add("Skipping invalid module from server", "warning");
+      }
+    }
+    $this->log->add("Finished checking for module updates!");
   }
 
 
@@ -646,42 +727,34 @@ class UpdateManager
    */
   public function update($updateFile, $installPath = "")
   {
-    if ($installpath != "") {
+    $this->log->add("Updating...");
+    if ($installPath != "") {
       if(!is_dir($installPath)) {
         mkdir($installPath, 0660, true);
         chmod($installPath, 0660);
-        echo("<pre>
-        Directory {$installPath} does not exist. Created.
-        </pre>");
-      }
-      foreach( new RecursiveIteratorIterator(
-          new RecursiveDirectoryIterator( $installpath, FilesystemIterator::SKIP_DOTS | FilesystemIterator::UNIX_PATHS ),
-          RecursiveIteratorIterator::CHILD_FIRST ) as $value ) {
-              $value->isFile() ? unlink( $value ) : rmdir( $value );
-      }
-    } else {
-      foreach( new RecursiveIteratorIterator(
-          new RecursiveDirectoryIterator( 'cms', FilesystemIterator::SKIP_DOTS | FilesystemIterator::UNIX_PATHS ),
-          RecursiveIteratorIterator::CHILD_FIRST ) as $value ) {
-              $value->isFile() ? unlink( $value ) : rmdir( $value );
+        $this->log->add("  -  Directory {$installPath} created for installation");
       }
     }
 
+    $this->log->add("  -  Extracting update package");
     $path = __DIR__ . "/" . $this->rootPath . $installPath;
     $zip = new ZipArchive;
-    $res = $zip->open($updateFile);
-    if ($res === TRUE) {
+    $result = $zip->open($updateFile);
+    if ($result === TRUE) {
         $zip->extractTo($path);
         $zip->close();
-        echo " <b>Done!</b><br>";
-        $installed = true;
-        unlink($updateFile);
-
+        $this->log->add("  -  Extracted update package successfully!");
+        $this->log->add("  -  Deleting update package");
+        if (!unlink($updateFile)) {
+          $this->log->add("WARNING: Could not delete update package...", "warning");
+        }
+        $this->log->add("Finished updating");
     }
     else {
-      echo " <b>Failed!</b><br>Error while extracting MIL.<br>The installation failed.</p>";
+      $this->log->add("Error while extracting update package! Update aborted", "error");
+      // TODO: Fix aborting methods
+      throw new \Exception("Unexpected error while extracting an updatepackage", 1);
     }
-    echo("</pre>");
   }
 }
 
