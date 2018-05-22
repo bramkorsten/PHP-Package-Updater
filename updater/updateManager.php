@@ -89,9 +89,16 @@ class UpdateManager
   protected $installedModules;
 
   /**
+   * Array of versions of installed modules
+   * @var array
+   */
+  protected $installedModuleVersions;
+
+  /**
    * Latest core version retrieved from server
    * @var string
    */
+
   protected $latestCoreVersion;
 
   /**
@@ -150,6 +157,7 @@ class UpdateManager
     $this->backupPath = __DIR__ . "/" . $this->rootPath . $this->config['general']['backup_path'];
     $this->updatePath = __DIR__ . "/" . $this->rootPath . $this->config['general']['update_path'];
     $this->databaseIsBackedUp = false;
+    $this->installedModuleVersions = array();
     $this->log = new Logger("logs", "updatelog", "UpdateManager");
   }
 
@@ -161,13 +169,13 @@ class UpdateManager
 
     try {
       $this->remoteInstanceInformation = $this->getInstanceInformation()['instance'];
+      $this->runCoreUpdates();
+      $this->runModuleUpdates();
     } catch (\Exception $e) {
       $this->log->add($e, "error");
       return false;
     }
-
-    $this->runCoreUpdates();
-    $this->runModuleUpdates();
+    
     $this->log->end();
   }
 
@@ -263,6 +271,49 @@ class UpdateManager
           return false;
       }
     }
+  }
+
+
+  /**
+   * [changeRemoteInstanceSetting description]
+   * @param  string $setting The setting to change in the remote instance
+   * @param  string $value   What value to set
+   * @return boolean returns true when successful
+   */
+  public function changeRemoteInstanceSetting($setting, $value)
+  {
+    $this->log->add("Setting '{$setting}' to '{$value}' in remote instance");
+    $authorizationToken = $this->applicationToken;
+    // $authorizationToken = "1234";
+    $curlVariables = array(
+      'Authorization' => $authorizationToken,
+      'setting' => $setting,
+      'value' => $value
+    );
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $this->apiBaseUrl . 'setinstance');
+    curl_setopt($ch, CURLOPT_POST, 1);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, \http_build_query($curlVariables));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+
+    $result = curl_exec($ch);
+    $result = \json_decode($result, true);
+    if(curl_errno($ch)) {
+      $this->log->add("Curl error while saving instance data", "warning");
+      $this->log->add(curl_error($ch), "warning");
+      throw new \Exception(curl_error($ch));
+    }
+    if (curl_getinfo($ch)['http_code'] != 200) {
+      $httpCode = curl_getinfo($ch)['http_code'];
+      curl_close($ch);
+      $this->log->add("Failed to save instance data... This should be fixed ASAP", "warning");
+      $this->log->add("HTTP Code of error: {$httpCode}", "warning");
+      throw new \Exception("Error while saving instance data. Error code: {$httpCode}", 1);
+    }
+    if ($result['error'] == false) {
+      $this->log->add("Successfully saved setting");
+    }
+    curl_close($ch);
   }
 
 
@@ -425,11 +476,9 @@ class UpdateManager
     if(!is_dir($this->updatePath)) {
       mkdir($this->updatePath, 0660, true);
       chmod($this->updatePath, 0774);
-      echo("<pre>
-      Directory {$this->updatePath} does not exist. Created.
-      </pre>");
+      $this->log->add("Update folder does not exist and will be created");
     }
-    $local_file = $this->updatePath . "mil-module-{$name}-{$version}.zip";
+    $local_file = $this->updatePath . "mil-module-{$name}-{$version}.txt";
     $fileHandler = \fopen($local_file, 'w');
 
     $header = array();
@@ -475,7 +524,7 @@ class UpdateManager
       'Authorization' => $authorizationToken
     );
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $this->apiBaseUrl . 'instances');
+    curl_setopt($ch, CURLOPT_URL, $this->apiBaseUrl . 'instance');
     curl_setopt($ch, CURLOPT_POST, 1);
     curl_setopt($ch, CURLOPT_POSTFIELDS, \http_build_query($curlVariables));
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -488,6 +537,7 @@ class UpdateManager
       throw new \Exception("Error while getting instance information... Error code: {$httpCode}", 1);
     }
     $instanceInformation = json_decode($result, true);
+    $this->installedModuleVersions = \explode(",", $instanceInformation['instance']['module_versions']);
     curl_close($ch);
 
     if ($instanceInformation["error"] !== "false") {
@@ -565,11 +615,16 @@ class UpdateManager
     if ($path == "") {
       $this->log->add("WARNING: folder to delete cannot be empty for safety reasons...", "warning");
     } else {
-      $this->log->add("Deleting folder: '{$path}'");
-      foreach( new RecursiveIteratorIterator(
-          new RecursiveDirectoryIterator( $path, FilesystemIterator::SKIP_DOTS | FilesystemIterator::UNIX_PATHS ),
-          RecursiveIteratorIterator::CHILD_FIRST ) as $value ) {
-              $value->isFile() ? unlink( $value ) : rmdir( $value );
+      if(is_dir($path)) {
+        $this->log->add("Deleting folder: '{$path}'");
+        foreach( new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator( $path, FilesystemIterator::SKIP_DOTS | FilesystemIterator::UNIX_PATHS ),
+            RecursiveIteratorIterator::CHILD_FIRST ) as $value ) {
+                $value->isFile() ? unlink( $value ) : rmdir( $value );
+        }
+      }
+      else {
+        $this->log->add("Directory '{$path}' does not exist and cannot be deleted...", "warning");
       }
     }
   }
@@ -639,6 +694,7 @@ class UpdateManager
           // TODO: Delete local setting and add to API
           $this->config_set('core', 'version', $this->latestCoreVersion);
           $this->config_set('core', 'last_update', $nowFormatted);
+          $this->changeRemoteInstanceSetting("core_version", $this->latestCoreVersion);
         }
         catch (\Exception $e) {
           $this->log->add("Critical error while updating the core... Terminating", "error");
@@ -680,7 +736,8 @@ class UpdateManager
         $this->log->add("  -  WARNING: information about a module could not be found on the server. The response was false", "warning");
       }
     }
-
+    $installableModuleIndex = 0;
+    $flag_hasUpdated = false;
     foreach ($this->installableModules as $installableModule => $module) {
       $localVersion = $this->config["module_{$installableModule}"]['version'];
       if ($localVersion == "") {
@@ -703,18 +760,24 @@ class UpdateManager
             $this->removeFolder("modules/{$installableModule}");
             $this->update($updateFile, "modules/{$installableModule}");
             $this->checkMigrationsForModule($installableModule);
+            $this->installedModuleVersions[$installableModuleIndex] = $latestVersion;
+            $nowFormatted = date("Y-m-d H:i:s");
+            $this->config_set("module_{$installableModule}", 'version', $latestVersion);
+            $this->config_set("module_{$installableModule}", 'last_update', $nowFormatted);
+            $flag_hasUpdated = true;
           } catch (\Exception $e) {
             // TODO: Add reverting method
             $this->log->add("Exception while updating a module. Reverting...", "error");
+            throw new \Exception("Exception while updating a module. " . $e, 1);
           }
-          $nowFormatted = date("Y-m-d H:i:s");
-          $this->config_set("module_{$installableModule}", 'version', $latestVersion);
-          $this->config_set("module_{$installableModule}", 'last_update', $nowFormatted);
         }
-        $this->log->add("Finished this module!");
       } else {
         $this->log->add("Skipping invalid module from server", "warning");
       }
+      $installableModuleIndex++;
+    }
+    if ($flag_hasUpdated) {
+      $this->changeRemoteInstanceSetting("module_versions", implode(",", $this->installedModuleVersions));
     }
     $this->log->add("Finished checking for module updates!");
   }

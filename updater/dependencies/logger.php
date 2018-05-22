@@ -97,7 +97,7 @@
       // open file
       $fd = fopen($this->file, "a");
       // append date/time to message
-      $str = date("Y/m/d h:i:s", time()) . ": {$typeLetter}{$package}: " . $message;
+      $str = date("Y/m/d H:i:s", time()) . ": {$typeLetter}{$package}: " . $message;
       // write string
       fwrite($fd, $str . "\n");
       // close file
@@ -110,7 +110,7 @@
       // open file
       $fd = fopen($this->file, "a");
       // append date/time to message
-      $str = date("Y/m/d h:i:s", time()) . ": V/MakeItLive_Logger: STARTING LOG\n";
+      $str = date("Y/m/d H:i:s", time()) . ": V/MakeItLive_Logger: STARTING LOG\n";
       // write string
       fwrite($fd, "\n" . $str . "\n");
       // close file
@@ -125,7 +125,7 @@
       $fd = fopen($this->file, "a");
       // append date/time to message
       $this->add("ENDING LOG", "verbose", "MakeItLive_Logger");
-      $str = date("Y/m/d h:i:s", time()) . ": V/MakeItLive_Logger: TOTAL EXECUTION TIME SINCE LOG START: " . $execution_time . " SECONDS";
+      $str = date("Y/m/d H:i:s", time()) . ": V/MakeItLive_Logger: TOTAL EXECUTION TIME SINCE LOG START: " . $execution_time . " SECONDS";
       // write string
       fwrite($fd, $str . "\n\n");
       // close file
