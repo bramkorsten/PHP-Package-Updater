@@ -173,10 +173,6 @@ class UpdateManager
     $this->log->start();
     $this->log->add("UpdateManager version " . $this->version);
 
-    $this->revertToBackup("core/" . $this->config['core']['backup_name'], "cms");
-
-    die();
-
     // Check if the instance is allowed to update locally.
     if (!$this->updatable) {
       $this->log->add("Instance disabled in configuration file. This is likely caused by a failed update. Please fix any remaining issues and reset the 'updatable' flag", "warning");
@@ -702,17 +698,25 @@ class UpdateManager
   {
     $this->log->add("Reverting '{$destination}' using '{$file}'");
     $this->removeFolder($destination);
-    mkdir($destination, 0660, true);
-    chmod($destination, 0660);
-
+    if (!is_dir($destination)) {
+      mkdir($destination, 0660, true);
+      chmod($destination, 0660);
+    }
     $path = __DIR__ . "/" . $this->rootPath . "backups/" . $file;
 
     $zip = new ZipArchive;
     $result = $zip->open($path);
     if ($result === TRUE) {
-        $zip->extractTo($path);
+      if ($zip->extractTo($destination)) {
         $zip->close();
         $this->log->add("Revert successful!");
+      }
+      else {
+        $zip->close();
+        $this->log->add("Error while reverting", "error");
+        $this->log->add("The system will not be stable at this point. A manual reset is advised. Do not delete the backup folders, as these may contain useful data!", "warning");
+      }
+
     }
     else {
       $this->log->add("Not a valid backup file", "error");
