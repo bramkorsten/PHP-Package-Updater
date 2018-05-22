@@ -138,6 +138,12 @@ class UpdateManager
   public $rootPath;
 
   /**
+   * Is the instance updatable. Pulled from configuration file, and updated by remoteInstanceInformation
+   * @var string
+   */
+  public $updatable;
+
+  /**
    * Path where updates are stored temporarily, relative to script location
    * @var string
    */
@@ -156,6 +162,7 @@ class UpdateManager
     $this->rootPath = $this->config['general']['root_path'];
     $this->backupPath = __DIR__ . "/" . $this->rootPath . $this->config['general']['backup_path'];
     $this->updatePath = __DIR__ . "/" . $this->rootPath . $this->config['general']['update_path'];
+    $this->updatable = $this->config['general']['updatable'];
     $this->databaseIsBackedUp = false;
     $this->installedModuleVersions = array();
     $this->log = new Logger("logs", "updatelog", "UpdateManager");
@@ -165,18 +172,56 @@ class UpdateManager
   {
     $this->log->start();
     $this->log->add("UpdateManager version " . $this->version);
+
+    $this->revertToBackup("core/" . $this->config['core']['backup_name'], "cms");
+
+    die();
+
+    // Check if the instance is allowed to update locally.
+    if (!$this->updatable) {
+      $this->log->add("Instance disabled in configuration file. This is likely caused by a failed update. Please fix any remaining issues and reset the 'updatable' flag", "warning");
+      $this->log->end();
+      return false;
+    }
+
     $this->log->add("Starting updateprocess...");
 
+    // Try to get the required information from the remote instance via the API
+    // Will throw an exception if there is an error, or if the request returned 404
     try {
       $this->remoteInstanceInformation = $this->getInstanceInformation()['instance'];
-      $this->runCoreUpdates();
-      $this->runModuleUpdates();
     } catch (\Exception $e) {
       $this->log->add($e, "error");
       return false;
     }
-    
+
+    // Check if the instance is allowed to update remotely.
+    if (!$this->remoteInstanceInformation['active']) {
+      $this->log->add("Instance disabled remotely. Updating not allowed", "warning");
+      $this->log->end();
+      return false;
+    }
+
+    // Try to check and run updates on the core
+    // Will throw exceptions if anything goes wrong
+    // runCoreUpdates() will automatically revert required changes on exceptions
+    try {
+      $this->runCoreUpdates();
+    } catch (\Exception $e) {
+      return false;
+    }
+
+    // Try to check and run updates on the modules found in the remote instance
+    // Will throw exceptions if anything goes wrong
+    // runModuleUpdates() will automatically revert required changes on exceptions
+    try {
+      $this->runModuleUpdates();
+    } catch (\Exception $e) {
+      return false;
+    }
+
     $this->log->end();
+    return true;
   }
 
 
@@ -389,8 +434,11 @@ class UpdateManager
    * @param string $key     The key
    * @param string $value   The value
    */
-  public function config_set($section, $key, $value)
+  private function config_set($section, $key, $value)
   {
+    // change loaded data for immediate use
+    $this->config[$section][$key] = $value;
+
     $config_data = parse_ini_file(__DIR__ . "/" . $this->configPath . 'config.ini', true);
     $config_data[$section][$key] = $value;
     $new_content = '';
@@ -411,6 +459,18 @@ class UpdateManager
         $new_content .= "[$section]\n$section_content\n\n";
     }
     file_put_contents(__DIR__ . "/" . $this->configPath . 'config.ini', $new_content);
+  }
+
+
+  /**
+   * Disable automatic updates. This function should only be called when the updateprocess fails.
+   * @return none
+   */
+  private function disableAutomaticUpdates()
+  {
+    $this->log->add("disabling automatic updates. Warning! This setting cannot be automatically disabled, and requires the 'updatable' flag in the .ini file to be reset to 1...");
+    $this->config_set("general", "updatable", "0");
+    $this->changeRemoteInstanceSetting("active", "0");
   }
 
 
@@ -631,6 +691,37 @@ class UpdateManager
 
 
   /**
+   * Revert a destinationfolder to a backup version.
+   * Warning, this does not check for anything that could be wrong,
+   * and will blindly run it's function. USE WITH CAUTION
+   * @param  string $file        The backup file
+   * @param  string $destination Path to revert
+   * @return none
+   */
+  public function revertToBackup($file, $destination)
+  {
+    $this->log->add("Reverting '{$destination}' using '{$file}'");
+    $this->removeFolder($destination);
+    mkdir($destination, 0660, true);
+    chmod($destination, 0660);
+
+    $path = __DIR__ . "/" . $this->rootPath . "backups/" . $file;
+
+    $zip = new ZipArchive;
+    $result = $zip->open($path);
+    if ($result === TRUE) {
+        $zip->extractTo($path);
+        $zip->close();
+        $this->log->add("Revert successful!");
+    }
+    else {
+      $this->log->add("Not a valid backup file", "error");
+      $this->log->add("The system will not be stable at this point. A manual reset is advised. Do not delete the backup folders, as these may contain useful data!", "warning");
+    }
+  }
+
+
+  /**
    * Rollback migrations for the module specified
    * @param string $module  Name name of the module to rollback
    * @param int $target     Target version. Set to 0 for uninstall
@@ -659,7 +750,7 @@ class UpdateManager
 
 
   /**
-   * Function to check for core updates. Uses MakeItLive API
+   * Function to check for updates to the core, and run them if true
    * @return null
    * @throws Exception will throw exception when there is an error
    */
@@ -682,26 +773,60 @@ class UpdateManager
       }
       if(!$this->backupDatabase()) {
         $this->log->add("Could not backup database. Updating is not secure and will be cancelled!", "error");
+        $this->disableAutomaticUpdates();
+        $this->sendHelp();
         throw new \Exception("Error while backing up the database. Updating would not be secure...", 1);
       }
+      $step = 0;
       if ($this->backupCore()) {
         try {
           $updateFile = $this->downloadCoreUpdate($this->coreUpdateUrl);
+          $step = 1;
           $this->removeFolder("cms");
+          $step = 2;
           $this->update($updateFile);
+          $step = 3;
           $this->checkMigrationsForCore();
           $nowFormatted = date("Y-m-d H:i:s");
-          // TODO: Delete local setting and add to API
           $this->config_set('core', 'version', $this->latestCoreVersion);
           $this->config_set('core', 'last_update', $nowFormatted);
           $this->changeRemoteInstanceSetting("core_version", $this->latestCoreVersion);
         }
         catch (\Exception $e) {
-          $this->log->add("Critical error while updating the core... Terminating", "error");
+          $this->log->add("Critical error while updating the core.", "error");
+          $this->log->add($e, "error");
+          $this->log->add("Reverting updates.", "error");
+
+          switch ($step) {
+            case 0:
+              $this->disableAutomaticUpdates();
+              $this->sendHelp();
+              break;
+            case 1:
+            case 2:
+              $this->disableAutomaticUpdates();
+              $this->revertToBackup("core/" . $this->config['core']['backup_name'], "cms");
+              $this->sendHelp();
+              break;
+            case 3:
+              $this->disableAutomaticUpdates();
+              $this->revertToBackup("core/" . $this->config['core']['backup_name'], "cms");
+              $this->revertMigrations();
+              $this->sendHelp();
+              break;
+
+            default:
+              $this->disableAutomaticUpdates();
+              $this->sendHelp();
+              break;
+          }
           throw new \Exception("Error while updating the core with message: " . $e, 1);
         }
       }
       else {
+        $this->log->add("Could not backup the core. Updating would not be secure...", "error");
+        $this->disableAutomaticUpdates();
+        $this->sendHelp();
         throw new \Exception("Error while backing up the core. Updating would not be secure...", 1);
       }
     } else {
@@ -768,6 +893,7 @@ class UpdateManager
           } catch (\Exception $e) {
             // TODO: Add reverting method
             $this->log->add("Exception while updating a module. Reverting...", "error");
+            $this->log->add($e, "error");
             throw new \Exception("Exception while updating a module. " . $e, 1);
           }
         }
@@ -780,6 +906,39 @@ class UpdateManager
       $this->changeRemoteInstanceSetting("module_versions", implode(",", $this->installedModuleVersions));
     }
     $this->log->add("Finished checking for module updates!");
+  }
+
+
+
+  public function sendHelp($msg = "Not Provided")
+  {
+    $message = "There was an error while updating an instance. Reverting was successful, but automatic updating has been disabled. The custom message was:\r\n {$msg}";
+    $message = wordwrap($message, 70, "\r\n");
+    $to = $this->config['general']['support_email'];
+    $from = $this->config['general']['from_email'];
+    $headers = array(
+      'From' => $from,
+      'Reply-To' => $from,
+      'X-Mailer' => 'PHP/' . phpversion()
+    );
+    mail($to, 'UpdateManager: Error while updating an instance', $message, $headers);
+    $this->log->add("An automatic email was sent to {$to}");
+  }
+
+
+  // TODO: Add this feature
+  /**
+   * Will set maintenance mode to the value provided.
+   * @param boolean $value set mode to true or false
+   */
+  public function setMaintenanceMode($value)
+  {
+    if ($value === true) {
+      $this->log->add("Maintenance mode enabled!");
+    }
+    else {
+      $this->log->add("Maintenance mode disabled!");
+    }
   }
 
 
