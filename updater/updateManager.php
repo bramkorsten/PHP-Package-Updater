@@ -216,6 +216,15 @@ class UpdateManager
       return false;
     }
 
+    // Recursively delete all files in the folders specified in the configuration file
+    $purgeFolders = $this->config['on_update']['purge'];
+
+    if ($purgeFolders != null && !empty($purgeFolders) && $purgeFolders[0] != "") {
+      foreach ($purgeFolders as $folderToPurge) {
+        $this->removeFolder($folderToPurge);
+      }
+    }
+
     $this->log->end();
     return true;
   }
@@ -688,7 +697,7 @@ class UpdateManager
 
   /**
    * Revert a destinationfolder to a backup version.
-   * Warning, this does not check for anything that could be wrong,
+   * Warning, this does not check for any setting that could be wrong,
    * and will blindly run it's function. USE WITH CAUTION
    * @param  string $file        The backup file
    * @param  string $destination Path to revert
@@ -712,6 +721,7 @@ class UpdateManager
         $this->log->add("Revert successful!");
       }
       else {
+        // TODO: Notify of critical damage
         $zip->close();
         $this->log->add("Error while reverting", "error");
         $this->log->add("The system will not be stable at this point. A manual reset is advised. Do not delete the backup folders, as these may contain useful data!", "warning");
@@ -719,6 +729,7 @@ class UpdateManager
 
     }
     else {
+      // TODO: Notify of critical damage
       $this->log->add("Not a valid backup file", "error");
       $this->log->add("The system will not be stable at this point. A manual reset is advised. Do not delete the backup folders, as these may contain useful data!", "warning");
     }
@@ -801,6 +812,8 @@ class UpdateManager
           $this->log->add($e, "error");
           $this->log->add("Reverting updates.", "error");
 
+          // This switch checks where an update has gone wrong,
+          // which makes reverting just those steps possible.
           switch ($step) {
             case 0:
               $this->disableAutomaticUpdates();
@@ -815,7 +828,11 @@ class UpdateManager
             case 3:
               $this->disableAutomaticUpdates();
               $this->revertToBackup("core/" . $this->config['core']['backup_name'], "cms");
-              $this->revertMigrations();
+
+              // FIXME: Add a way to revert migrations. Although this isn't completely nessesary,
+              //        it would be nice to not leave any new, unused tables when an update fails.
+
+              //$this->revertMigrations();
               $this->sendHelp();
               break;
 
@@ -914,6 +931,10 @@ class UpdateManager
 
 
 
+  /**
+   * Send an automated email to DJVB for help when an update fails. This might mean the developer that built this f'd up :P
+   * @param  string $msg The message to include after the standard message.
+   */
   public function sendHelp($msg = "Not Provided")
   {
     $message = "There was an error while updating an instance. Reverting was successful, but automatic updating has been disabled. The custom message was:\r\n {$msg}";
