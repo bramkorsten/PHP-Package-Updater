@@ -232,31 +232,40 @@ class UpdateManager
 
   /**
    * Backs up the core using parameters from the config file. Returns true when succesful.
-   * @return boolean state
+   * @param  string   $folder           The folder to backup, without leading/trailing slashes
+   * @param  string   $backupLocation   Where to put the backup, without leading/trailing slashes
+   * @param  string   $backupNamePrefix Aditional prefix to add to the backup name
+   * @return boolean  state
    */
-  public function backupCore()
+  public function backupFolder($folder, $backupLocation, $backupNamePrefix = "backup")
   {
+
     $now = date("Ymd-Gi");
     $nowFormatted = date("Y-m-d H:i:s");
     // Get real path for our folder
-
-    $rootPath = realpath(__DIR__ . "/" . $this->rootPath  . "cms");
-    $this->log->add("Backing up {$rootPath}");
+    $folderToBackup = realpath(__DIR__ . "/" . $this->rootPath  . $folder);
+    if ($folderToBackup == "" || $folderToBackup == null) {
+      $this->log->add("'{$folder}' is not a valid folder. No backup created", "warning");
+      return false;
+    }
+    $this->log->add("Backing up {$folderToBackup}");
 
     try {
       // Initialize archive object
       $zip = new ZipArchive();
-      if(!is_dir($this->backupPath. "core/")) {
-        mkdir($this->backupPath. "core/", 0660, true);
-        chmod($this->backupPath. "core/", 0774);
-        $this->log->add("Creating core backup folder...");
+      if(!is_dir($this->backupPath. $backupLocation)) {
+        mkdir($this->backupPath. $backupLocation, 0660, true);
+        // TODO: Check chmod permissions for folder
+        chmod($this->backupPath. $backupLocation, 0774);
+        $this->log->add("added path: '{$backupLocation}'");
       }
-      $zip->open($this->backupPath . "core/backup-{$this->currentCoreVersion}-{$now}.zip", ZipArchive::CREATE | ZipArchive::OVERWRITE);
+      $zipFile = $this->backupPath . "{$backupLocation}/{$backupNamePrefix}-{$now}.zip";
+      $zip->open($zipFile, ZipArchive::CREATE | ZipArchive::OVERWRITE);
 
       // Create recursive directory iterator
       /** @var SplFileInfo[] $files */
       $files = new RecursiveIteratorIterator(
-          new RecursiveDirectoryIterator($rootPath),
+          new RecursiveDirectoryIterator($folderToBackup),
           RecursiveIteratorIterator::LEAVES_ONLY
       );
 
@@ -267,22 +276,21 @@ class UpdateManager
           {
               // Get real and relative path for current file
               $filePath = $file->getRealPath();
-              $relativePath = substr($filePath, strlen($rootPath) + 1);
+              $relativePath = substr($filePath, strlen($folderToBackup) + 1);
 
               // Add current file to archive
               $zip->addFile($filePath, $relativePath);
           }
       }
-      // TODO: remove local setting and add to API instance
-      $this->config_set('core', 'latest_backup', $nowFormatted);
-      $this->config_set('core', 'backup_name', "backup-{$this->currentCoreVersion}-{$now}.zip");
+      // TODO: Add api setting
       $zip->close();
-      $this->log->add("Finished backing up the MakeItLive Core");
+      $this->log->add("Finished backing up folder");
       return true;
 
     } catch (\Exception $e) {
-      $this->log->add("Could not create core backup... Updating is not secure and will be cancelled.", "error");
+      $this->log->add("Could not backup folder", "error");
       $this->log->add($e, "error");
+      return false;
     }
   }
 
@@ -793,7 +801,7 @@ class UpdateManager
         throw new \Exception("Error while backing up the database. Updating would not be secure...", 1);
       }
       $step = 0;
-      if ($this->backupCore()) {
+      if ($this->backupFolder("cms", "core", "core-{$this->currentCoreVersion}")) {
         try {
           $updateFile = $this->downloadCoreUpdate($this->coreUpdateUrl);
           $step = 1;
