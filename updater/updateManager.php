@@ -839,12 +839,12 @@ class UpdateManager
             case 1:
             case 2:
               $this->disableAutomaticUpdates();
-              $this->revertToBackup("core/" . $this->config['core']['backup_name'], "cms");
+              $this->revertToBackup($this->config['core']['backup_name'], "cms");
               $this->sendHelp();
               break;
             case 3:
               $this->disableAutomaticUpdates();
-              $this->revertToBackup("core/" . $this->config['core']['backup_name'], "cms");
+              $this->revertToBackup($this->config['core']['backup_name'], "cms");
 
               // FIXME: Add a way to revert migrations. Although this isn't completely nessesary,
               //        it would be nice to not leave any new, unused tables when an update fails.
@@ -920,29 +920,67 @@ class UpdateManager
           $downloadUrl = $latestVersionLink;
           if ($localVersion != "0.0.0" && $localVersion != "") {
             $backupName = "";
+            $hasBackup = false;
             if ($backupName = $this->backupFolder("modules/{$installableModule}", "modules/{$installableModule}", "{$installableModule}-{$localVersion}")) {
               $this->config_set("module_{$installableModule}", 'latest_backup', date("Y-m-d H:i:s"));
               $this->config_set("module_{$installableModule}", 'backup_name', $backupName);
+              $hasBackup = true;
             } else {
               throw new \Exception("Could not backup module '{$installableModule}'. Update stopped...", 1);
               return false;
             }
           }
-
+          $step = 0;
           try {
             $updateFile = $this->downloadModuleUpdate($installableModule,$latestVersion,$downloadUrl);
+            $step = 1;
             $this->removeFolder("modules/{$installableModule}");
+            $step = 2;
             $this->update($updateFile, "modules/{$installableModule}");
+            $step = 3;
             $this->checkMigrationsForModule($installableModule);
+            $step = 4;
             $this->installedModuleVersions[$installableModuleIndex] = $latestVersion;
             $nowFormatted = date("Y-m-d H:i:s");
             $this->config_set("module_{$installableModule}", 'version', $latestVersion);
             $this->config_set("module_{$installableModule}", 'last_update', $nowFormatted);
             $flag_hasUpdated = true;
           } catch (\Exception $e) {
-            // TODO: Add reverting method
             $this->log->add("Exception while updating a module. Reverting...", "error");
             $this->log->add($e, "error");
+
+            switch ($step) {
+              case 0:
+                $this->disableAutomaticUpdates();
+                $this->sendHelp();
+                break;
+              case 1:
+              case 2:
+                if ($hasBackup) {
+                  $this->revertToBackup($this->config["module_{$installableModule}"]['backup_name'], "modules/{$installableModule}");
+                }
+                $this->disableAutomaticUpdates();
+                $this->sendHelp();
+                break;
+              case 3:
+                if ($hasBackup) {
+                  $this->revertToBackup($this->config["module_{$installableModule}"]['backup_name'], "modules/{$installableModule}");
+                }
+                $this->disableAutomaticUpdates();
+
+                // FIXME: Add a way to revert migrations. Although this isn't completely nessesary,
+                //        it would be nice to not leave any new, unused tables when an update fails.
+                //$this->revertMigrations();
+                $this->sendHelp();
+                break;
+
+              default:
+                $this->disableAutomaticUpdates();
+                $this->sendHelp();
+                break;
+
+            }
+
             throw new \Exception("Exception while updating a module. " . $e, 1);
           }
         }
