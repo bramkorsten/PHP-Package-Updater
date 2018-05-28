@@ -180,6 +180,12 @@ class UpdateManager
       return false;
     }
 
+    if (set_time_limit(120) !== false) {
+      $this->log->add("Set max execution time to '120'");
+    } else {
+      $this->log->add("Failed to modify execution time. In extreme cases, the update may timeout...", "warning");
+    }
+
     $this->log->add("Starting updateprocess...");
 
     // Try to get the required information from the remote instance via the API
@@ -285,7 +291,7 @@ class UpdateManager
       // TODO: Add api setting
       $zip->close();
       $this->log->add("Finished backing up folder");
-      return true;
+      return "{$backupLocation}/{$backupNamePrefix}-{$now}.zip";
 
     } catch (\Exception $e) {
       $this->log->add("Could not backup folder", "error");
@@ -539,10 +545,10 @@ class UpdateManager
 
   /**
    * Attemps to download a zip file from the url provided. Returns the saved path
-   * @param  string $name Name of the module
-   * @param  string $version New version of the module
-   * @param  string $downloadUrl Where to download the file from
-   * @return string The saved path of the update file
+   * @param  string $name           Name of the module
+   * @param  string $version        New version of the module
+   * @param  string $downloadUrl    Where to download the file from
+   * @return string                 The saved path of the update file
    */
   public function downloadModuleUpdate($name, $version, $downloadUrl)
   {
@@ -801,7 +807,10 @@ class UpdateManager
         throw new \Exception("Error while backing up the database. Updating would not be secure...", 1);
       }
       $step = 0;
-      if ($this->backupFolder("cms", "core", "core-{$this->currentCoreVersion}")) {
+      $backupName = "";
+      if ($backupName = $this->backupFolder("cms", "core", "core-{$this->currentCoreVersion}")) {
+        $this->config_set('core', "latest_backup", date("Y-m-d H:i:s"));
+        $this->config_set('core', "backup_name", $backupName);
         try {
           $updateFile = $this->downloadCoreUpdate($this->coreUpdateUrl);
           $step = 1;
@@ -909,6 +918,17 @@ class UpdateManager
             return false;
           }
           $downloadUrl = $latestVersionLink;
+          if ($localVersion != "0.0.0" && $localVersion != "") {
+            $backupName = "";
+            if ($backupName = $this->backupFolder("modules/{$installableModule}", "modules/{$installableModule}", "{$installableModule}-{$localVersion}")) {
+              $this->config_set("module_{$installableModule}", 'latest_backup', date("Y-m-d H:i:s"));
+              $this->config_set("module_{$installableModule}", 'backup_name', $backupName);
+            } else {
+              throw new \Exception("Could not backup module '{$installableModule}'. Update stopped...", 1);
+              return false;
+            }
+          }
+
           try {
             $updateFile = $this->downloadModuleUpdate($installableModule,$latestVersion,$downloadUrl);
             $this->removeFolder("modules/{$installableModule}");
