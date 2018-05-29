@@ -11,8 +11,11 @@ use PDO;
 include_once(dirname(__FILE__) . '/dependencies/Mysqldump.php');
 use Ifsnop\Mysqldump as IMysqldump;
 
-include_once(dirname(__FILE__) . '/dependencies/logger.php');
+include_once(dirname(__FILE__) . '/dependencies/Logger.php');
 use BramKorsten\MakeItLive\Logger as Logger;
+
+include_once(dirname(__FILE__) . '/dependencies/GarbageCollector.php');
+use BramKorsten\MakeItLive\GarbageCollector as GarbageCollector;
 
 error_reporting(E_ALL ^ E_NOTICE);
 

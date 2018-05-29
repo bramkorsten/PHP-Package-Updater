@@ -1,6 +1,8 @@
 <?php
 require_once "updater/updateManager.php";
+require_once "updater/dependencies/GarbageCollector.php";
 
+use BramKorsten\MakeItLive\GarbageCollector as GarbageCollector;
 use BramKorsten\MakeItLive\UpdateManager as UpdateManager;
 
 $time_start = microtime(true);
