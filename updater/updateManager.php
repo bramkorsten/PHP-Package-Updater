@@ -237,7 +237,7 @@ class UpdateManager
 
 
   /**
-   * Backs up the core using parameters from the config file. Returns true when succesful.
+   * Backs up a folder using parameters from the config file. Returns true when succesful.
    * @param  string   $folder           The folder to backup, without leading/trailing slashes
    * @param  string   $backupLocation   Where to put the backup, without leading/trailing slashes
    * @param  string   $backupNamePrefix Aditional prefix to add to the backup name
@@ -448,6 +448,37 @@ class UpdateManager
 
 
   /**
+   * Check if any modules should be deleted
+   * @param  array  $installedModules Current installed modules [name]
+   * @return boolean                     [description]
+   */
+  public function checkModulesToDelete($installedModules)
+  {
+    $this->log->add("Checking for installed modules that will be deleted...");
+    $dirs = glob("modules" . '/*' , GLOB_ONLYDIR);
+    foreach ($dirs as $key => $dir) {
+      $array = array();
+      $array = explode("/", $dir);
+      end($array);
+      $arrayKey = key($array);
+      reset($array);
+      $dirs[$key] = $array[$arrayKey];
+    }
+
+    foreach ($dirs as $key => $dir) {
+      if (!array_key_exists($dir, $installedModules)) {
+        if(!$this->backupFolder("modules/{$dir}", "modules/{$dir}/deleted","delete")) {
+          $this->log->add("Could not create a backup of 'modules/{$dir}'", "warning");
+        }
+        $this->removeFolder("modules/{$dir}");
+        rmdir("modules/{$dir}");
+        $this->config_delete_section("module_{$dir}");
+      }
+    }
+  }
+
+
+  /**
    * Overwrites config file parameters
    * @param string $section The section to add the parameter to
    * @param string $key     The key
@@ -476,6 +507,37 @@ class UpdateManager
         }, array_values($section_content), array_keys($section_content));
         $section_content = implode("\n", $section_content);
         $new_content .= "[$section]\n$section_content\n\n";
+    }
+    file_put_contents(__DIR__ . "/" . $this->configPath . 'config.ini', $new_content);
+  }
+
+
+  /**
+   * Delete a section of the configuration file
+   * @param  string $sectionToSkip Which section to exclude from the new document
+   * @return none
+   */
+  private function config_delete_section($sectionToSkip)
+  {
+    $config_data = parse_ini_file(__DIR__ . "/" . $this->configPath . 'config.ini', true);
+    $new_content = '';
+    foreach ($config_data as $section => $section_content) {
+      if ($section != $sectionToSkip) {
+        $section_content = array_map(function($value, $key) {
+          if (is_array($value)) {
+            $subarray = "";
+
+            foreach ($value as $arraykey => $arrayvalue) {
+              $subarray .= "{$key}[] = '$arrayvalue'\n";
+            }
+            return substr($subarray, 0, -1);
+          } else {
+            return "$key = \"{$value}\"";
+          }
+        }, array_values($section_content), array_keys($section_content));
+        $section_content = implode("\n", $section_content);
+        $new_content .= "[$section]\n$section_content\n\n";
+      }
     }
     file_put_contents(__DIR__ . "/" . $this->configPath . 'config.ini', $new_content);
   }
@@ -881,8 +943,6 @@ class UpdateManager
   public function runModuleUpdates()
   {
     $this->log->add("Checking for module updates");
-    //print_r($this->remoteInstanceInformation);
-    $installableModules = array();
 
     foreach ($this->remoteInstanceInformation["modules"] as $module) {
       if ($module !== "false") {
@@ -993,6 +1053,8 @@ class UpdateManager
       $this->changeRemoteInstanceSetting("module_versions", implode(",", $this->installedModuleVersions));
     }
     $this->log->add("Finished checking for module updates!");
+
+    $this->checkModulesToDelete($this->installableModules);
   }
 
 
