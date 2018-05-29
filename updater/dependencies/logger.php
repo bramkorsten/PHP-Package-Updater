@@ -131,6 +131,34 @@
       // close file
       fclose($fd);
     }
+
+
+    /**
+     * Export a log as plaintext
+     * @param  string $date The date of the log file. Defaults to today
+     * @param  string $name The name of the file. Defaults to updatelog
+     * @return string|false Returns the file as a string, or false if the file does not exist
+     */
+    public function exportLog($date = "now", $name = "updatelog")
+    {
+      if ($date = "now") {
+        $date = date("Y-m-d");
+      }
+      $dir = $this->filePath . "/";
+      $fileName = $date . "-" . $name . ".txt";
+      if (file_exists($dir.$fileName)) {
+        $this->add("Exporting '{$dir}{$fileName}' as plaintext", "verbose", "MakeItLive_Logger");
+        $file = fopen($dir.$fileName, "r");
+        $fileContent = fread($file, filesize($dir.$fileName));
+        fclose($file);
+        return $fileContent;
+
+      } else {
+        $this->add("Cannot export '{$fileName}'. File does not exist", "warning", "MakeItLive_Logger");
+        return false;
+      }
+
+    }
   }
 
 ?>
