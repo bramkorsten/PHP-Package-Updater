@@ -613,7 +613,7 @@ class UpdateManager
    * @param  string $name           Name of the module
    * @param  string $version        New version of the module
    * @param  string $downloadUrl    Where to download the file from
-   * @return string                 The saved path of the update file
+   * @return string                 The path of the saved update file
    */
   public function downloadModuleUpdate($name, $version, $downloadUrl)
   {
@@ -622,7 +622,7 @@ class UpdateManager
       chmod($this->updatePath, 0774);
       $this->log->add("Update folder does not exist and will be created");
     }
-    $local_file = $this->updatePath . "mil-module-{$name}-{$version}.txt";
+    $local_file = $this->updatePath . "mil-module-{$name}-{$version}.zip";
     $fileHandler = \fopen($local_file, 'w');
 
     $header = array();
